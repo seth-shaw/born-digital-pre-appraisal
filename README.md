@@ -65,3 +65,7 @@ extraction fallback.
 Detection is based on `file` output and MIME types, not extensions. The
 converter supports modern Word documents, legacy Word/OLE documents, RTF,
 OpenDocument text files, and WordPerfect documents that LibreOffice can read.
+
+## AI
+
+Most of this repository was created using ChatGPT's Codex.
