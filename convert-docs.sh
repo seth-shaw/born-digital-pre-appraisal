@@ -25,6 +25,7 @@ export HOME="$temporary_dir/home"
 mkdir -p "$HOME"
 
 converted_count=0
+extracted_count=0
 failed_count=0
 
 extract_text_fallback() {
@@ -42,8 +43,10 @@ extract_text_fallback() {
         }
     ' /usr/share/dict/words - > "$text_file"; then
         echo "Created fallback text file $text_file"
+        return 0
     else
         echo "Could not create fallback text file $text_file" >&2
+        return 1
     fi
 }
 
@@ -52,7 +55,7 @@ record_failure() {
     local message="$2"
 
     echo "$message" >&2
-    extract_text_fallback "$source_file"
+    extract_text_fallback "$source_file" || true
     failed_count=$((failed_count + 1))
 }
 
@@ -97,7 +100,12 @@ while IFS= read -r -d '' file; do
             if [[ "$description" =~ [Ww]ord([Pp]erfect)? ]]; then
                 conversion_source="$file"
             elif [[ "$mime_type" == "application/octet-stream" && "$description" == "data" ]]; then
-                record_failure "$file" "File was reported as generic data; using text extraction"
+                echo "File was reported as generic data; using text extraction"
+                if extract_text_fallback "$file"; then
+                    extracted_count=$((extracted_count + 1))
+                else
+                    failed_count=$((failed_count + 1))
+                fi
                 continue
             fi
             ;;
@@ -144,4 +152,4 @@ while IFS= read -r -d '' file; do
     echo "Created $output_file"
 done < <(find "$input_dir" -type f -print0)
 
-echo "Converted $converted_count document(s); skipped $failed_count due to errors."
+echo "Converted $converted_count document(s); extracted text from $extracted_count file(s); encountered $failed_count conversion/error(s)."

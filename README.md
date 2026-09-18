@@ -58,7 +58,8 @@ reported, a dictionary-filtered `strings` extraction is saved as
 `<full-filename>.txt`, and processing continues with the next file. For
 example, a failed `report.docx` conversion produces `report.docx.txt`. Files
 reported by `file` simply as `data` are also sent directly through this text
-extraction fallback.
+extraction fallback and are counted as extracted files, not conversion
+failures.
 
 ## Supported document types
 
