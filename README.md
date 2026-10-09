@@ -12,6 +12,10 @@ downloaded server distribution with its published SHA-512 checksum. The server
 listens only on the container's loopback interface and stops when conversion
 finishes.
 
+The image also includes Tesseract and its English language data. Tika is
+configured to use Tesseract as its text recognizer for supported raster images
+and for scanned PDF pages that need OCR under Tika's default automatic policy.
+
 ## Build the image
 
 From this directory, run:

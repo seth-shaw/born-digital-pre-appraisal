@@ -1,5 +1,17 @@
 {
   "server": {},
+  "engines": {
+    "tesseract": {
+      "tesseract-ocr-parser": {
+        "language": "eng"
+      }
+    }
+  },
+  "text-recognizers": [
+    {
+      "engine": "tesseract"
+    }
+  ],
   "parsers": [
     {
       "default-parser": {}

@@ -11,6 +11,8 @@ RUN apt-get update \
         binutils \
         ca-certificates \
         curl \
+        tesseract-ocr \
+        tesseract-ocr-eng \
         unzip \
         wamerican \
     && curl --fail --location --show-error \
