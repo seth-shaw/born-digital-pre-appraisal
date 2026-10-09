@@ -1,0 +1,15 @@
+{
+  "server": {},
+  "parsers": [
+    {
+      "default-parser": {}
+    },
+    {
+      "error-parser": {
+        "_mime-include": [
+          "application/octet-stream"
+        ]
+      }
+    }
+  ]
+}

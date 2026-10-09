@@ -2,30 +2,87 @@
 
 set -Eeuo pipefail
 
-if [[ $# -lt 1 || $# -gt 2 || ! -d "$1" ]]; then
-    echo "Usage: $0 DIRECTORY [OUTPUT_FORMAT]" >&2
+if [[ $# -ne 1 || ! -d "$1" ]]; then
+    echo "Usage: $0 DIRECTORY" >&2
     exit 1
 fi
 
 input_dir=$(cd -- "$1" && pwd)
-output_format=${2:-md}
-pandoc_format=$output_format
+tika_home=${TIKA_HOME:-/opt/tika}
+tika_server="$tika_home/tika-server.jar"
+tika_config="$tika_home/tika-config.json"
+tika_port=${TIKA_SERVER_PORT:-9998}
+tika_url="http://127.0.0.1:${tika_port}"
+server_state_dir=$(mktemp -d)
+server_log="$server_state_dir/tika-server.log"
+server_pid=""
 
-# Keep the existing GitHub-Flavored Markdown behavior for the default `md`
-# format while allowing any Pandoc output format, such as `html`.
-if [[ "$output_format" == "md" ]]; then
-    pandoc_format=gfm
+if [[ ! -f "$tika_server" ]]; then
+    echo "Apache Tika server not found at $tika_server" >&2
+    exit 1
 fi
 
-temporary_dir=$(mktemp -d)
-trap 'rm -rf -- "$temporary_dir"' EXIT
+if [[ ! -f "$tika_config" ]]; then
+    echo "Apache Tika configuration not found at $tika_config" >&2
+    exit 1
+fi
 
-# LibreOffice needs a writable user profile, even in headless mode.
-export HOME="$temporary_dir/home"
-mkdir -p "$HOME"
+stop_server() {
+    if [[ -n "$server_pid" ]] && kill -0 "$server_pid" 2>/dev/null; then
+        kill "$server_pid" 2>/dev/null || true
+        wait "$server_pid" 2>/dev/null || true
+    fi
+
+    rm -rf -- "$server_state_dir"
+}
+
+trap stop_server EXIT
+
+echo "Starting Apache Tika Server on $tika_url..."
+(
+    cd -- "$tika_home"
+    exec java -jar "$tika_server" \
+        --config "$tika_config" \
+        --host 127.0.0.1 \
+        --port "$tika_port"
+) > "$server_log" 2>&1 &
+server_pid=$!
+
+server_ready=false
+for _ in {1..120}; do
+    if curl --silent --fail --max-time 1 "$tika_url/version" > /dev/null; then
+        server_ready=true
+        break
+    fi
+
+    if ! kill -0 "$server_pid" 2>/dev/null; then
+        break
+    fi
+
+    sleep 0.5
+done
+
+if [[ "$server_ready" != true ]]; then
+    echo "Apache Tika Server did not become ready. Server log:" >&2
+    cat "$server_log" >&2
+    exit 1
+fi
+
+# Force parser-worker initialization before processing the first real file.
+if ! curl --silent --show-error --fail-with-body \
+    --request PUT \
+    --header 'Content-Type: text/plain' \
+    --data-binary 'Apache Tika warm-up' \
+    --output /dev/null \
+    "$tika_url/tika/html"; then
+    echo "Apache Tika Server warm-up failed. Server log:" >&2
+    cat "$server_log" >&2
+    exit 1
+fi
+
+echo "Apache Tika Server is ready."
 
 converted_count=0
-extracted_count=0
 failed_count=0
 
 extract_text_fallback() {
@@ -59,97 +116,32 @@ record_failure() {
     failed_count=$((failed_count + 1))
 }
 
-while IFS= read -r -d '' file; do
-    filename=$(basename -- "$file")
-    stem=${filename%.*}
-    output_file="${file}.${output_format}"
+# Materialize the input list before creating output so files written during this
+# run cannot be picked up by find. Generated HTML and fallback text from an
+# earlier run are excluded as well.
+mapfile -d '' source_files < <(
+    find "$input_dir" -type f ! -name '*.html' ! -name '*.txt' -print0
+)
 
-    # Detect the actual file format. This deliberately does not use the
-    # filename extension, since archives often contain incorrectly named or
-    # extensionless documents.
-    if ! mime_type=$(file --brief --mime-type "$file"); then
-        record_failure "$file" "Could not determine the file type for $file; skipping"
-        continue
-    fi
+for source_file in "${source_files[@]}"; do
+    output_file="${source_file}.html"
+    temporary_output=$(mktemp "${output_file}.tmp.XXXXXX")
 
-    if ! description=$(file --brief "$file"); then
-        record_failure "$file" "Could not inspect $file; skipping"
-        continue
-    fi
-    conversion_source=""
+    #echo "Converting $source_file with Apache Tika Server..."
 
-    case "$mime_type" in
-        application/vnd.openxmlformats-officedocument.wordprocessingml.document)
-            # Pandoc can read modern Word documents directly.
-            conversion_source="$file"
-            ;;
-        application/msword|application/rtf|text/rtf|\
-        application/vnd.oasis.opendocument.text|\
-        application/vnd.oasis.opendocument.text-template|\
-        application/vnd.wordperfect|application/x-wordperfect)
-            conversion_source="$file"
-            ;;
-        application/CDFV2)
-            # Older Word files are commonly reported as generic OLE compound
-            # documents rather than application/msword.
-            conversion_source="$file"
-            ;;
-        application/octet-stream|application/x-ole-storage)
-            # Older Word and WordPerfect files can be reported as generic
-            # binary data, so inspect file(1)'s description too.
-            if [[ "$description" =~ [Ww]ord([Pp]erfect)? ]]; then
-                conversion_source="$file"
-            elif [[ "$mime_type" == "application/octet-stream" && "$description" == "data" ]]; then
-                echo "File was reported as generic data; using text extraction"
-                if extract_text_fallback "$file"; then
-                    extracted_count=$((extracted_count + 1))
-                else
-                    failed_count=$((failed_count + 1))
-                fi
-                continue
-            fi
-            ;;
-        *)
-            if [[ "$description" =~ [Ww]ord([Pp]erfect)? ]]; then
-                conversion_source="$file"
-            fi
-            ;;
-    esac
-
-    [[ -n "$conversion_source" ]] || continue
-
-    echo "Converting $file ($mime_type)..."
-
-    if [[ "$mime_type" == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ]]; then
-        if ! pandoc "$conversion_source" --from=docx --to="$pandoc_format" --output="$output_file"; then
-            record_failure "$file" "Pandoc could not convert $file; skipping"
-            continue
-        fi
+    if curl --silent --show-error --fail-with-body \
+        --globoff \
+        --request PUT \
+        --upload-file "$source_file" \
+        --output "$temporary_output" \
+        "$tika_url/tika/html"; then
+        mv -- "$temporary_output" "$output_file"
+        converted_count=$((converted_count + 1))
+        echo "Created $output_file"
     else
-        # Normalize legacy formats, including WordPerfect, to DOCX before
-        # passing them to Pandoc.
-        conversion_dir=$(mktemp -d "$temporary_dir/convert.XXXXXX")
-
-        if ! libreoffice --headless --convert-to docx --outdir "$conversion_dir" "$conversion_source" >/dev/null; then
-            record_failure "$file" "LibreOffice could not convert $file; skipping"
-            continue
-        fi
-
-        converted_file="$conversion_dir/${stem}.docx"
-
-        if [[ ! -f "$converted_file" ]]; then
-            record_failure "$file" "LibreOffice did not create a DOCX for $file; skipping"
-            continue
-        fi
-
-        if ! pandoc "$converted_file" --from=docx --to="$pandoc_format" --output="$output_file"; then
-            record_failure "$file" "Pandoc could not convert $file; skipping"
-            continue
-        fi
+        rm -f -- "$temporary_output"
+        record_failure "$source_file" "Apache Tika could not convert $source_file; skipping"
     fi
+done
 
-    converted_count=$((converted_count + 1))
-    echo "Created $output_file"
-done < <(find "$input_dir" -type f -print0)
-
-echo "Converted $converted_count document(s); extracted text from $extracted_count file(s); encountered $failed_count conversion/error(s)."
+echo "Converted $converted_count document(s) to HTML; encountered $failed_count conversion error(s)."

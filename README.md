@@ -1,13 +1,16 @@
-# Document to Markdown converter
+# Document Converter
 
-This project builds a Docker image containing LibreOffice Writer, Pandoc, the
-`file` utility, and the headless Java components needed for clean LibreOffice
-startup. The container scans a mounted directory, identifies documents by
-their detected file type rather than their filename extension, and writes
-files in the requested Pandoc output format beside the source documents.
+This project builds a Docker image containing Apache Tika Server 4.x. The
+container starts one local Tika server, waits for it to become ready, warms up
+its parser worker, and then recursively extracts each file's content as HTML
+through the REST API. The server is reused for the entire batch so Java and
+parser startup do not recur for every file.
 
-Legacy Word documents and formats such as WordPerfect are normalized to DOCX
-with LibreOffice before Pandoc converts them to GitHub-Flavored Markdown.
+Tika detects formats from file content rather than relying on filename
+extensions. The image currently pins Apache Tika 4.1.0 and verifies the
+downloaded server distribution with its published SHA-512 checksum. The server
+listens only on the container's loopback interface and stops when conversion
+finishes.
 
 ## Build the image
 
@@ -20,7 +23,7 @@ docker build -t doc-converter .
 ## Convert a directory
 
 Place the documents to convert in a directory such as `./documents`, then run
-the container with that directory mounted at `/work/input`:
+the container with that directory mounted at `/work/input`.
 
 ### PowerShell
 
@@ -28,14 +31,6 @@ the container with that directory mounted at `/work/input`:
 docker run --rm `
   --mount "type=bind,source=${PWD}\documents,target=/work/input" `
   doc-converter /work/input
-```
-
-To export to HTML, pass `html` as the second argument:
-
-```powershell
-docker run --rm `
-  --mount "type=bind,source=${PWD}\documents,target=/work/input" `
-  doc-converter /work/input html
 ```
 
 ### Linux/macOS shell
@@ -46,26 +41,27 @@ docker run --rm \
   doc-converter /work/input
 ```
 
-The second argument selects the Pandoc output format and defaults to `md`.
-The default `md` format is exported as GitHub-Flavored Markdown. For example,
-using `html` creates `report.docx.html`; the default creates
-`report.docx.md`.
+Every successful conversion creates `<full-filename>.html`; for example,
+`report.docx` produces `report.docx.html`. Existing HTML output is overwritten.
+Files ending in `.html` or `.txt` are skipped so generated output and fallback
+files are not treated as new input on later runs.
 
-The script scans subdirectories recursively. Existing output files are
-overwritten, and files that are not recognized as supported documents are
-left unchanged. If a document cannot be read or converted, the error is
-reported, a dictionary-filtered `strings` extraction is saved as
-`<full-filename>.txt`, and processing continues with the next file. For
-example, a failed `report.docx` conversion produces `report.docx.txt`. Files
-reported by `file` simply as `data` are also sent directly through this text
-extraction fallback and are counted as extracted files, not conversion
-failures.
+If Tika cannot convert a file, the error is reported and a dictionary-filtered
+`strings` extraction is saved as `<full-filename>.txt`. Processing then
+continues with the next file.
+
+The bundled Tika configuration maps the generic
+`application/octet-stream` type to Tika's error parser. When no more-specific
+parser supports a detected binary type, `/tika/html` therefore returns HTTP
+422 instead of an empty successful response, allowing the converter to invoke
+the text fallback.
 
 ## Supported document types
 
-Detection is based on `file` output and MIME types, not extensions. The
-converter supports modern Word documents, legacy Word/OLE documents, RTF,
-OpenDocument text files, and WordPerfect documents that LibreOffice can read.
+The bundled Tika standard parsers support Microsoft Office and OpenDocument
+files, WordPerfect 5.x and 6.x, RTF, PDF, EPUB, iWork packages, email, text,
+HTML/XML, archives, and many additional formats. Some formats expose only
+metadata, and newer iWork formats may not expose body text.
 
 ## AI
 
